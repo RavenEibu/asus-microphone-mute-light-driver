@@ -14,8 +14,8 @@ This repo ships one self-contained installer: `asus-micmute-installer.sh`.
 ## Quick start
 
 ```bash
-git clone <YOUR_REPO_URL>.git
-cd <YOUR_REPO_NAME>
+git clone git@github.com:RavenEibu/asus-microphone-mute-light-driver.git
+cd git@github.com:RavenEibu/asus-microphone-mute-light-driver.git
 chmod +x asus-micmute-installer.sh
 
 # Install (service + udev rule)
@@ -136,10 +136,9 @@ journalctl --user -u micmute-led.service -b
 
 ## Contributing
 
-Issues and PRs are welcome — see **CONTRIBUTING.md**.
+Issues and PRs are welcome — see **[CONTRIBUTE.md](./CONTRIBUTE.md)**.
 
 ---
 
 ## License
-
-**GPL-3.0** — see **LICENSE**.
+**GPL-3.0** — see **[LICENSE](./LICENSE)**.
