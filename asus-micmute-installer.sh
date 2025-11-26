@@ -84,28 +84,30 @@ write_embedded_script() {
 # Watches ALSA Capture and drives ASUS mic-mute LED
 
 check_service_status() {
-  if systemctl is-active --quiet alsa-state.service; then
-    spawnAmixerLogger() { stdbuf -oL amixer -n events | grep --line-buffered Capture; }
-    getCurrentState()   { stdbuf -oL amixer get Capture | grep --line-buffered -Em 1 '\[o.+\]'; }
+  spawnAmixerLogger() { stdbuf -oL amixer -n events | grep --line-buffered Capture; }
+  getCurrentState()   { stdbuf -oL amixer get Capture | grep --line-buffered -Em 1 '\[o.+\]'; }
 
-    spawnAmixerLogger | while read -r _; do
-      state=$(getCurrentState)
-      if echo "$state" | grep -q '\[on\]'; then
-        if echo "$state" | grep -q '\[0%\]'; then
-          echo 1 > /sys/devices/platform/asus-nb-wmi/leds/platform::micmute/brightness
-        else
-          echo 0 > /sys/devices/platform/asus-nb-wmi/leds/platform::micmute/brightness
-        fi
-      else
+  spawnAmixerLogger | while read -r _; do
+    state=$(getCurrentState)
+    if echo "$state" | grep -q '\[on\]'; then
+      if echo "$state" | grep -q '\[0%\]'; then
         echo 1 > /sys/devices/platform/asus-nb-wmi/leds/platform::micmute/brightness
+      else
+        echo 0 > /sys/devices/platform/asus-nb-wmi/leds/platform::micmute/brightness
       fi
-    done
-  else
-    : # quiet
-  fi
+    else
+      echo 1 > /sys/devices/platform/asus-nb-wmi/leds/platform::micmute/brightness
+    fi
+  done
 }
 
 while true; do
+  # Wait until amixer is available
+  if ! command -v amixer >/dev/null 2>&1; then
+    sleep 2
+    continue
+  fi
+
   check_service_status
   sleep 2
 done
