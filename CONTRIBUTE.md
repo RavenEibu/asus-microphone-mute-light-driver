@@ -4,7 +4,7 @@ Thanks for helping improve the ASUS Mic‑Mute LED installer! This project aims 
 
 ## Ground rules
 
-- Keep the installer **POSIX/Bash** (no external deps beyond `systemd`, `udev`, `amixer`).
+- Keep the installer **POSIX/Bash** (no external deps beyond `systemd`, `udev`, and `pactl` or `amixer`).
 - Prefer **user** services over root daemons; use udev only for **narrow** permissions (single LED node).
 - Be explicit and defensive: clear error messages, `set -euo pipefail`, check preconditions.
 - Document any user‑visible change in **README.md**.
@@ -48,10 +48,18 @@ ls -l /sys/class/leds/platform::micmute/brightness  # group=audio, g+rw
 
 ```bash
 # 4) Functional check (LED toggles with mic state)
-amixer get Capture | tail -n +1
-amixer set Capture toggle    # mute/unmute -> LED should change
-amixer set Capture 0%        # LED should turn ON (muted/0%)
-amixer set Capture 50%       # LED should turn OFF (live)
+pactl set-source-mute   @DEFAULT_SOURCE@ toggle   # mute/unmute -> LED should change
+pactl set-source-volume @DEFAULT_SOURCE@ 0%       # LED should turn ON (0%)
+pactl set-source-volume @DEFAULT_SOURCE@ 50%      # LED should turn OFF (live, if unmuted)
+# ALSA-only hosts: amixer set Capture toggle / 0% / 50%
+```
+
+```bash
+# 4b) Recovery check: restart the audio server, the LED must keep following the mic
+systemctl --user restart pipewire pipewire-pulse wireplumber
+sleep 3; pactl set-source-mute @DEFAULT_SOURCE@ toggle   # LED should change; no CPU spin
+pactl set-source-mute @DEFAULT_SOURCE@ toggle            # restore
+ps -o pid,pcpu,args -C pactl,amixer                      # ~0% CPU
 ```
 
 ```bash
@@ -94,7 +102,7 @@ sudo ./asus-micmute-installer.sh --remove
 - Optional `--led-path` flag (auto‑detect, fallback to current default).
 - Invert‑logic toggle for models with reversed LED semantics.
 - Early detection & friendly error if LED node is missing.
-- Improve PipeWire/PulseAudio robustness without extra dependencies.
+- Optional kernel `audio-micmute` LED trigger as a zero-process alternative (needs root to set the trigger).
 
 ## License
 
