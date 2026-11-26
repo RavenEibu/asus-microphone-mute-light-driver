@@ -25,8 +25,9 @@ Thanks for helping improve the ASUS Mic‑Mute LED installer! This project aims 
 > Do these on a host that actually exposes the LED (usually `/sys/class/leds/platform::micmute/brightness`).
 
 ```bash
-# 0) Lint (optional)
-shellcheck asus-micmute-installer.sh || true
+# 0) Lint + automated tests (no hardware needed; CI runs the same)
+shellcheck -S warning asus-micmute-installer.sh tests/run.sh
+bash tests/run.sh
 ```
 
 ```bash
@@ -91,6 +92,7 @@ sudo ./asus-micmute-installer.sh --remove
 
 ## PR checklist
 
+- [ ] `bash tests/run.sh` and `shellcheck` pass; new behavior has a test (the watcher is extracted from the installer, so tests cover it).
 - [ ] Installer works on a clean machine (install → verify → remove).
 - [ ] No privilege escalation beyond what’s needed for the LED node.
 - [ ] README updated (usage, flags, behavior) if you changed UX.
@@ -99,9 +101,9 @@ sudo ./asus-micmute-installer.sh --remove
 
 ## Ideas & good first issues
 
-- Optional `--led-path` flag (auto‑detect, fallback to current default).
+- Optional `--led-path` flag (auto‑detect, fallback to current default); the watcher already honors `MICMUTE_LED`.
 - Invert‑logic toggle for models with reversed LED semantics.
-- Early detection & friendly error if LED node is missing.
+- Resync the LED after suspend/resume.
 - Optional kernel `audio-micmute` LED trigger as a zero-process alternative (needs root to set the trigger).
 
 ## License

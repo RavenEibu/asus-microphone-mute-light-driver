@@ -1,0 +1,17 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck -S warning asus-micmute-installer.sh tests/run.sh
+          awk "/<<'EMBEDDED'/{f=1;next} /^EMBEDDED\$/{f=0} f" asus-micmute-installer.sh > "$RUNNER_TEMP/watcher.sh"
+          shellcheck -s bash "$RUNNER_TEMP/watcher.sh"
+      - name: tests
+        run: bash tests/run.sh
