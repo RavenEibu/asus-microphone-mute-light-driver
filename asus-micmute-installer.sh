@@ -81,29 +81,119 @@ write_embedded_script() {
   info "Installing embedded watcher to $TARGET_SCRIPT…"
   install -m 0755 /dev/stdin "$TARGET_SCRIPT" <<'EMBEDDED'
 #!/bin/bash
-# Watches ALSA Capture and drives ASUS mic-mute LED
+# Watches the default capture source and drives the ASUS mic-mute LED.
+#   LED ON  : microphone muted, or volume at 0%
+#   LED OFF : microphone live (unmuted and volume > 0%)
+#
+# Backends (auto-detected, override with MICMUTE_BACKEND=pactl|amixer):
+#   pactl  : event-driven via `pactl subscribe` (PipeWire/PulseAudio). Idle cost ~0
+#            and it exits cleanly when the sound server goes away.
+#   amixer : fallback via `amixer -n events` (ALSA only, no pactl needed).
 
-check_service_status() {
-  spawnAmixerLogger() { stdbuf -oL amixer -n events | grep --line-buffered Capture; }
-  getCurrentState()   { stdbuf -oL amixer get Capture | grep --line-buffered -Em 1 '\[o.+\]'; }
+export LC_ALL=C
+LED=/sys/devices/platform/asus-nb-wmi/leds/platform::micmute/brightness
 
-  spawnAmixerLogger | while read -r _; do
-    state=$(getCurrentState)
-    if echo "$state" | grep -q '\[on\]'; then
-      if echo "$state" | grep -q '\[0%\]'; then
-        echo 1 > /sys/devices/platform/asus-nb-wmi/leds/platform::micmute/brightness
-      else
-        echo 0 > /sys/devices/platform/asus-nb-wmi/leds/platform::micmute/brightness
-      fi
-    else
-      echo 1 > /sys/devices/platform/asus-nb-wmi/leds/platform::micmute/brightness
+if [[ -z ${MICMUTE_BACKEND:-} ]]; then
+  if command -v pactl >/dev/null 2>&1; then MICMUTE_BACKEND=pactl; else MICMUTE_BACKEND=amixer; fi
+fi
+
+# Safety net: a long-lived event listener can lose its server connection (e.g. after a
+# PipeWire restart) and spin at 100% CPU instead of exiting. Kill it when it stays busy so
+# the main loop respawns a healthy one.
+WATCHDOG_INTERVAL=${WATCHDOG_INTERVAL:-3}    # seconds between CPU samples
+WATCHDOG_MAX_PCT=${WATCHDOG_MAX_PCT:-50}     # % of one core considered "spinning"
+WATCHDOG_STRIKES=${WATCHDOG_STRIKES:-2}      # consecutive hot samples before kill
+
+# utime+stime (clock ticks) of a pid, from /proc/<pid>/stat
+cpu_ticks() {
+  local stat rest f
+  stat=$(<"/proc/$1/stat") || return 1
+  rest=${stat##*) }          # strip "pid (comm) " -> fields start at 3 (state)
+  read -ra f <<<"$rest"
+  printf '%s\n' $(( f[11] + f[12] ))
+}
+
+watchdog() {
+  local pid=$1 hz limit prev cur strikes=0
+  hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+  limit=$(( WATCHDOG_MAX_PCT * hz * WATCHDOG_INTERVAL / 100 ))
+  prev=$(cpu_ticks "$pid") || return 0
+  while sleep "$WATCHDOG_INTERVAL"; do
+    cur=$(cpu_ticks "$pid") || return 0          # process already gone
+    if (( cur - prev > limit )); then strikes=$(( strikes + 1 )); else strikes=0; fi
+    prev=$cur
+    if (( strikes >= WATCHDOG_STRIKES )); then
+      echo "event listener (pid $pid) is spinning; restarting it" >&2
+      kill "$pid" 2>/dev/null
+      return 0
     fi
   done
 }
 
+# ---- backends ---------------------------------------------------------------
+
+# Event stream; run via `exec` in a subshell so $! is the listener's pid.
+event_stream() {
+  if [[ $MICMUTE_BACKEND == pactl ]]; then
+    exec pactl subscribe
+  else
+    exec stdbuf -oL amixer -n events
+  fi
+}
+
+# Is this event line worth a LED refresh?
+is_relevant() {
+  if [[ $MICMUTE_BACKEND == pactl ]]; then
+    [[ $1 == *" on source #"* || $1 == *" on server"* ]]   # source change / default source change
+  else
+    [[ $1 == *Capture* ]]
+  fi
+}
+
+# Sets the LED: 1 when muted or 0%, 0 when live.
+updateLed() {
+  if [[ $MICMUTE_BACKEND == pactl ]]; then
+    local mute vol pct
+    mute=$(pactl get-source-mute @DEFAULT_SOURCE@ 2>/dev/null) || return 0
+    vol=$(pactl get-source-volume @DEFAULT_SOURCE@ 2>/dev/null) || return 0
+    [[ $vol =~ ([0-9]+)% ]] || return 0
+    pct=${BASH_REMATCH[1]}
+    if [[ $mute == *yes* || $pct -eq 0 ]]; then echo 1 > "$LED"; else echo 0 > "$LED"; fi
+  else
+    local state
+    state=$(amixer get Capture 2>/dev/null | grep -Em 1 '\[o.+\]' || true)
+    if grep -q '\[on\]' <<<"$state" && ! grep -q '\[0%\]' <<<"$state"; then
+      echo 0 > "$LED"
+    else
+      echo 1 > "$LED"
+    fi
+  fi
+}
+
+check_service_status() {
+  local line pid wd efd
+  # `exec` inside <(...) keeps $! == the listener pid, so the watchdog can kill it.
+  exec {efd}< <(event_stream 2>/dev/null)
+  pid=$!
+
+  updateLed            # sync once on (re)start; events only fire on changes
+  watchdog "$pid" &
+  wd=$!
+
+  while read -r -u "$efd" line; do
+    is_relevant "$line" || continue
+    while read -r -t 0.2 -u "$efd" _; do :; done   # coalesce bursts of events
+    updateLed
+  done
+
+  kill "$wd" 2>/dev/null
+  wait "$wd" 2>/dev/null
+  exec {efd}<&-
+}
+
 while true; do
-  # Wait until amixer is available
-  if ! command -v amixer >/dev/null 2>&1; then
+  # Wait until the backend tool is available
+  if ! command -v "$MICMUTE_BACKEND" >/dev/null 2>&1; then
     sleep 2
     continue
   fi
@@ -156,8 +246,8 @@ After=default.target
 
 [Service]
 Type=simple
-# Wait until amixer works to avoid "Host is down"
-ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do amixer sget Capture >/dev/null 2>&1 && exit 0; sleep 1; done; echo "ALSA control not ready" >&2; exit 1'
+# Wait until the audio server answers (pactl, or amixer as fallback) to avoid "Host is down"
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do { pactl info >/dev/null 2>&1 || amixer sget Capture >/dev/null 2>&1; } && exit 0; sleep 1; done; echo "Audio server not ready" >&2; exit 1'
 ExecStart=/usr/local/bin/micmute-led.sh
 Restart=always
 RestartSec=2
@@ -176,8 +266,8 @@ UNIT
 install_all() {
   command -v udevadm >/dev/null || die "udev is required"
   command -v systemctl >/dev/null || die "systemd is required"
-  if ! command -v amixer >/dev/null; then
-    info "Warning: 'amixer' not found. Install alsa-utils for this to work."
+  if ! command -v pactl >/dev/null && ! command -v amixer >/dev/null; then
+    info "Warning: neither 'pactl' nor 'amixer' found. Install libpulse (pactl) or alsa-utils."
   fi
 
   ensure_audio_group
