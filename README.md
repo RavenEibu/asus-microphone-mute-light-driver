@@ -108,7 +108,7 @@ journalctl --user -u micmute-led.service -b
 
 - **Backend**: auto-detected (`pactl` preferred, `amixer` fallback). Force one by adding `Environment=MICMUTE_BACKEND=pactl` (or `amixer`) to the user unit.
 - **Watchdog**: tune `WATCHDOG_INTERVAL`, `WATCHDOG_MAX_PCT`, `WATCHDOG_STRIKES` the same way. The watcher is event-driven (no polling); the `sleep 2` in `/usr/local/bin/micmute-led.sh` is only the retry delay when the listener exits.
-- **Different LED name/path**: edit the installer **and** the embedded watcher path before installing.
+- **Different LED name/path**: edit `LED_CLASS_BRIGHTNESS` in the installer (udev rule + sanity check) and set `Environment=MICMUTE_LED=/sys/.../brightness` in the user unit (the watcher's default is `/sys/devices/platform/asus-nb-wmi/leds/platform::micmute/brightness`). `MICMUTE_LED_RETRY` (default 10 s) sets how often a missing/unwritable LED is re-checked.
 - **Run as root instead**: not recommended; current setup limits write access to a single sysfs node via the `audio` group.
 
 ---
@@ -122,6 +122,9 @@ journalctl --user -u micmute-led.service -b
   ```
   If your LED has a different name, adjust both the installer’s LED path and the watcher’s write path.
 
+- **Service is `active` but the LED never changes**
+  Look for `cannot write LED node ...` in `journalctl --user -u micmute-led.service -b`. The watcher logs it once and keeps retrying; it means the LED node is missing (model without `platform::micmute`, `asus-nb-wmi` not loaded) or not writable (udev rule not applied, no `audio` group yet). The installer also warns about a missing node at install time.
+
 - **No LED reaction**
   Check that `pactl get-source-mute @DEFAULT_SOURCE@` works (PipeWire/PulseAudio) or, for the ALSA fallback, that `alsa-utils` is installed and `amixer get Capture` shows valid controls. Look at `journalctl --user -u micmute-led.service -b`.
 
@@ -133,6 +136,16 @@ journalctl --user -u micmute-led.service -b
 
 - **LED logic inverted for your model**
   Edit the watcher at `/usr/local/bin/micmute-led.sh` and swap the values written to `brightness`.
+
+---
+
+## Development
+
+```bash
+bash tests/run.sh   # stub-based tests, no audio server or LED needed (~20 s)
+```
+
+The suite extracts the watcher embedded in the installer and runs it against fake `pactl`/`amixer` and a plain file as LED: LED rules, both backends, recovery when the sound server goes away, watchdog, and the missing-LED warning. CI (`.github/workflows/ci.yml`) runs `shellcheck` and the tests on every push and pull request.
 
 ---
 

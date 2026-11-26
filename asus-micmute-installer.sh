@@ -91,7 +91,10 @@ write_embedded_script() {
 #   amixer : fallback via `amixer -n events` (ALSA only, no pactl needed).
 
 export LC_ALL=C
-LED=/sys/devices/platform/asus-nb-wmi/leds/platform::micmute/brightness
+# Tunables (environment): MICMUTE_BACKEND, MICMUTE_LED, MICMUTE_LED_RETRY, WATCHDOG_*
+LED=${MICMUTE_LED:-/sys/devices/platform/asus-nb-wmi/leds/platform::micmute/brightness}
+LED_RETRY=${MICMUTE_LED_RETRY:-10}   # seconds between checks while the LED node is missing/unwritable
+LED_WARNED=0
 
 if [[ -z ${MICMUTE_BACKEND:-} ]]; then
   if command -v pactl >/dev/null 2>&1; then MICMUTE_BACKEND=pactl; else MICMUTE_BACKEND=amixer; fi
@@ -170,6 +173,17 @@ updateLed() {
   fi
 }
 
+# True when the LED node can be written. Logs once per outage, so a missing or
+# unwritable LED shows up in `systemctl status` / journalctl instead of failing silently.
+led_ready() {
+  if [[ -w $LED ]]; then LED_WARNED=0; return 0; fi
+  if (( LED_WARNED == 0 )); then
+    echo "cannot write LED node $LED (missing or no permission): is asus-nb-wmi loaded and the udev rule applied? retrying every ${LED_RETRY}s" >&2
+    LED_WARNED=1
+  fi
+  return 1
+}
+
 check_service_status() {
   local line pid wd efd
   # `exec` inside <(...) keeps $! == the listener pid, so the watchdog can kill it.
@@ -195,6 +209,12 @@ while true; do
   # Wait until the backend tool is available
   if ! command -v "$MICMUTE_BACKEND" >/dev/null 2>&1; then
     sleep 2
+    continue
+  fi
+
+  # Don't listen (and don't look healthy) while the LED can't be driven
+  if ! led_ready; then
+    sleep "$LED_RETRY"
     continue
   fi
 
@@ -268,6 +288,11 @@ install_all() {
   command -v systemctl >/dev/null || die "systemd is required"
   if ! command -v pactl >/dev/null && ! command -v amixer >/dev/null; then
     info "Warning: neither 'pactl' nor 'amixer' found. Install libpulse (pactl) or alsa-utils."
+  fi
+
+  if [[ ! -e "$LED_CLASS_BRIGHTNESS" ]]; then
+    info "Warning: $LED_CLASS_BRIGHTNESS not found. This model may not expose the mic-mute LED"
+    info "         via asus-nb-wmi (see: ls /sys/class/leds). The service will keep retrying and log a warning."
   fi
 
   ensure_audio_group
